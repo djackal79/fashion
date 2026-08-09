@@ -1,37 +1,40 @@
 /**
- * POST /api/enquiry — receives the enquiry form and writes to Supabase.
+ * Worker entrypoint. This project deploys via plain `wrangler deploy`, not
+ * Cloudflare Pages — so the `functions/api/*` auto-routing convention from the
+ * source repo (djackal79/luciole-website) does not apply here. This file is
+ * that same enquiry logic ported to an explicit fetch handler, plus the
+ * ASSETS binding serving everything else.
  *
- * This file runs server-side on Cloudflare Pages. It is the ONLY place the
- * service-role key exists. It is never imported by anything under src/, so it
- * cannot end up in the client bundle.
- *
- * Required Pages environment variables:
- *   SUPABASE_URL               e.g. https://<ref>.supabase.co
- *   SUPABASE_SERVICE_ROLE_KEY  service_role key — mark as Encrypted
- *   ENQUIRY_IP_SALT            any long random string; salts the IP hash
- * Optional:
- *   ENQUIRY_PROJECT_ID         uuid of the project row to attach enquiries to
+ * This is the only place the service-role key exists. It comes from a Worker
+ * secret (env.SUPABASE_SERVICE_ROLE_KEY), never from a committed file, and is
+ * never returned in a response.
  */
 
 const WINDOW_MINUTES = 10;
 const MAX_PER_WINDOW = 3;
 
-const LIMITS = {
-  name: 200,
-  email: 320,
-  message: 4000,
-  product_handle: 200,
-};
-
+const LIMITS = { name: 200, email: 320, message: 4000, product_handle: 200 };
 const ALLOWED_SOURCES = new Set(['general', 'wholesale', 'press']);
 
-export async function onRequestPost(context) {
-  const { request, env } = context;
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
 
+    if (url.pathname === '/api/enquiry') {
+      if (request.method !== 'POST') {
+        return json({ error: 'Method not allowed.' }, 405, { Allow: 'POST' });
+      }
+      return handleEnquiry(request, env);
+    }
+
+    return env.ASSETS.fetch(request);
+  },
+};
+
+async function handleEnquiry(request, env) {
   const missing = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'ENQUIRY_IP_SALT']
     .filter((key) => !env[key]);
   if (missing.length) {
-    // Names only — never the values.
     console.error(`enquiry: missing environment variables: ${missing.join(', ')}`);
     return json({ error: 'Enquiries are not configured yet.' }, 503);
   }
@@ -66,8 +69,6 @@ export async function onRequestPost(context) {
 
   const rest = new SupabaseRest(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 
-  // Rate limit. Durable because it counts rows, not isolate-local memory —
-  // a Cloudflare isolate can be recycled between two requests from the same client.
   if (ipHash) {
     const since = new Date(Date.now() - WINDOW_MINUTES * 60_000).toISOString();
     try {
@@ -80,7 +81,6 @@ export async function onRequestPost(context) {
         );
       }
     } catch (err) {
-      // A failed rate-limit check must not block a genuine enquiry.
       console.error('enquiry: rate-limit check failed:', err.message);
     }
   }
@@ -102,14 +102,9 @@ export async function onRequestPost(context) {
   }
 }
 
-/* Only onRequestPost is exported. Pages answers 405 for other methods by itself. */
-
-/* ------------------------------------------------------------------ helpers */
-
 class SupabaseRest {
   constructor(url, serviceRoleKey) {
     this.base = `${url.replace(/\/+$/, '')}/rest/v1`;
-    // Held only in this server-side closure. Never returned, never logged.
     this.headers = {
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
@@ -122,7 +117,6 @@ class SupabaseRest {
       headers: { ...this.headers, Prefer: 'count=exact', Range: '0-0' },
     });
     if (!response.ok) throw new Error(`count ${response.status}`);
-    // content-range looks like "0-0/12"
     const total = (response.headers.get('content-range') || '').split('/')[1];
     return Number.parseInt(total, 10) || 0;
   }
@@ -135,7 +129,6 @@ class SupabaseRest {
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      // Truncated, and it is PostgREST's own message — it never contains the key.
       throw new Error(`insert ${response.status}: ${detail.slice(0, 200)}`);
     }
     const [row] = await response.json();

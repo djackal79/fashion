@@ -1,11 +1,20 @@
-name = "nocturnal-series-site"
+name = "fashion"
 compatibility_date = "2026-08-08"
-pages_build_output_dir = "dist"
+main = "worker/index.js"
 
-# Secrets are NOT declared here. SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set
-# as Cloudflare Pages environment variables (Settings > Environment variables), with
-# the service-role key marked "Encrypted". They are read only inside functions/,
-# which runs server-side and is never bundled into the client.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+# React Router uses client-side routing (BrowserRouter) — direct loads of
+# /product/:handle, /privacy, /returns etc. need to fall back to index.html
+# rather than 404, since the router only takes over once index.html has loaded.
+not_found_handling = "single-page-application"
+
+# Secrets are NOT declared here — they never belong in a committed file.
+# Set as Worker environment variables in the Cloudflare dashboard, with
+# SUPABASE_SERVICE_ROLE_KEY marked "Encrypted":
 #
-#   npx wrangler pages secret put SUPABASE_SERVICE_ROLE_KEY
-#   npx wrangler pages secret put SUPABASE_URL
+#   npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+#   npx wrangler secret put SUPABASE_URL
+#   npx wrangler secret put ENQUIRY_IP_SALT
+#   npx wrangler secret put ENQUIRY_PROJECT_ID
